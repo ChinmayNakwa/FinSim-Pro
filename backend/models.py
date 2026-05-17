@@ -230,3 +230,48 @@ class SimulationResponse(BaseModel):
 
     # Regime comparison
     regime_comparison: List[dict]
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# STRESS TEST MODELS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class StressTestRequest(BaseModel):
+    simulation: SimulationRequest
+    scenario_key: str = "market_crash_2008"   # or "custom"
+    shock_year: int = 3                        # which sim-year the shock hits
+    custom_scenario: Optional[dict] = None    # only needed if scenario_key="custom"
+    run_all: bool = False                      # if True, ignores scenario_key and runs all
+
+
+class StressMetrics(BaseModel):
+    base_drawdown: float
+    shocked_drawdown: float
+    drawdown_delta: float
+    base_sharpe: float
+    shocked_sharpe: float
+    sharpe_delta: float
+    median_nw_loss_pct: float
+    prob_negative_pct: float
+
+
+class StressTestResponse(BaseModel):
+    scenario_key: str
+    scenario_label: str
+    scenario_desc: str
+    shock_year: int
+    recovery_year: Optional[int]
+    years_to_recover: Optional[int]
+    baseline: dict        # {p10, p50, p90} lists
+    shocked: dict         # {p10, p50, p90} lists
+    delta_p50: List[float]
+    metrics: StressMetrics
+    scenario_params: dict
+
+
+class StressCompareResponse(BaseModel):
+    """Returned when run_all=True — summary across all scenarios."""
+    results: List[dict]
+    worst_scenario: str     # scenario_key with highest median_nw_loss_pct
+    most_resilient: str     # scenario_key with lowest years_to_recover

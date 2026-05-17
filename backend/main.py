@@ -32,6 +32,9 @@ from models import (
     TaxConfigIn,
     TaxSnapshotResponse,
     YearlyRow,
+    StressTestRequest, 
+    StressTestResponse,
+    StressCompareResponse
 )
 from tax_engine import compute_tax_on_income
 from finance import (
@@ -44,6 +47,11 @@ from finance import (
     compute_drawdown,
     suggest_rebalancing,
 )
+
+from stress_test import (
+    run_stress_test, 
+    run_all_scenarios, 
+    SCENARIOS)
 
 import logging
 logging.basicConfig(level=logging.DEBUG)
@@ -421,3 +429,87 @@ def target_allocation(
     """Return a suggested target allocation based on age and risk tolerance."""
     alloc = get_age_based_allocation(age, risk_tolerance)
     return {k: round(v * 100, 2) for k, v in alloc.items()}
+
+
+@app.post(
+    "/stress-test",
+    summary="Run macro shock stress test against simulation",
+)
+def stress_test(req: StressTestRequest):
+    """
+    Injects a macro shock (crash, income loss, stagflation, etc.)
+    into the Monte Carlo simulation and compares against baseline.
+ 
+    **scenario_key options:** market_crash_2008 | covid_2020 | income_loss | stagflation | rate_hike_cycle | custom
+ 
+    Set **run_all=True** to get a comparative summary across all built-in scenarios.
+    """
+    sim_req = req.simulation
+ 
+    if sim_req.income <= sim_req.expenses:
+        raise HTTPException(400, "Monthly income must exceed monthly expenses.")
+    if not sim_req.portfolio_holdings:
+        raise HTTPException(400, "At least one portfolio holding is required.")
+    if req.shock_year >= sim_req.sim_years:
+        raise HTTPException(400, "shock_year must be less than sim_years.")
+ 
+    # Reuse blended forecast from finance module
+    from finance import get_blended_forecast
+    _, _, asset_forecasts = get_blended_forecast(sim_req.portfolio_holdings, sim_req.sim_years)
+    market_returns_by_asset = {
+        ac: (af["cagr"], af["vol"]) for ac, af in asset_forecasts.items()
+    }
+ 
+    if req.run_all:
+        results = run_all_scenarios(sim_req, market_returns_by_asset, req.shock_year)
+        worst      = max(results, key=lambda r: abs(r["median_nw_loss_pct"]))
+        resilient  = min(
+            [r for r in results if r["years_to_recover"] is not None],
+            key=lambda r: r["years_to_recover"],
+            default=results[0],
+        )
+        return StressCompareResponse(
+            results=results,
+            worst_scenario=worst["scenario_key"],
+            most_resilient=resilient["scenario_key"],
+        )
+ 
+    try:
+        result = run_stress_test(
+            sim_req,
+            market_returns_by_asset,
+            req.scenario_key,
+            req.shock_year,
+            req.custom_scenario,
+        )
+    except KeyError as e:
+        raise HTTPException(400, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+ 
+    return StressTestResponse(
+        scenario_key=result["scenario_key"],
+        scenario_label=result["scenario_label"],
+        scenario_desc=result["scenario_desc"],
+        shock_year=result["shock_year"],
+        recovery_year=result["recovery_year"],
+        years_to_recover=result["years_to_recover"],
+        baseline=result["baseline"],
+        shocked=result["shocked"],
+        delta_p50=result["delta_p50"],
+        metrics=result["metrics"],
+        scenario_params=result["scenario_params"],
+    )
+ 
+ 
+# 3. Bonus: GET endpoint to list available scenarios
+@app.get("/stress-test/scenarios", summary="List available stress test scenarios")
+def list_scenarios():
+    return {
+        key: {
+            "label": s["label"],
+            "description": s["description"],
+        }
+        for key, s in SCENARIOS.items()
+    }
+ 
