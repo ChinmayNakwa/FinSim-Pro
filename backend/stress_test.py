@@ -161,7 +161,7 @@ def run_stress_test(
         # We clone and zero income for shock_year by reducing it
         patched_req = req.copy(update={"income": req.income * 0.01})
 
-    shocked_sim = run_simulation(patched_req, shocked_returns)
+    shocked_sim = run_simulation(patched_req, market_returns_by_asset, prebuilt_asset_rand=shocked_returns)
     shocked_nw  = shocked_sim["net_worth"]
 
     # ── Percentile paths ──

@@ -1,3 +1,4 @@
+// 'use client'
 'use client'
 
 import React, { useState } from 'react'
@@ -11,6 +12,7 @@ import GoalsTab from '@/components/GoalsTab'
 import RebalanceTab from '@/components/RebalanceTab'
 import YearlyTable from '@/components/YearlyTable'
 import AIReportTab from '@/components/AIReportTab'
+import StressTestTab from '@/components/StressTestTab'
 import ErrorBanner from '@/components/ErrorBanner'
 import { EmptyState, LoadingState } from '@/components/States'
 import { Tabs } from '@/components/ui'
@@ -20,7 +22,7 @@ import { SimulationRequest, SimulationResponse } from '@/types/api'
 
 const TABS = [
   '📈 Net Worth', '💼 Portfolio', '🧾 Tax',
-  '🎯 Goals', '⚖️ Rebalance', '📋 Year-by-Year', '🪄 AI Analysis'
+  '🎯 Goals', '⚖️ Rebalance', '📋 Year-by-Year', '🪄 AI Analysis', '⚡ Stress Test',
 ]
 
 export interface AIReportPayload {
@@ -167,6 +169,7 @@ export default function Home() {
                     downloadingPDF={downloadingPDF}
                   />
                 </div>
+                <div className={activeTab === 7 ? 'block' : 'hidden'}><StressTestTab lastRequest={lastRequest} /></div>
               </div>
             </div>
           )}
@@ -175,3 +178,7 @@ export default function Home() {
     </div>
   )
 }
+
+
+
+

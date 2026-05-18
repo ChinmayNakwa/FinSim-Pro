@@ -21,8 +21,8 @@ export async function fetchMetaAssets() {
 }
 
 /**
- * Now accepts SimulationResponse directly — no re-simulation on backend.
- * Returns the full structured report payload (charts + narrative + table).
+ * Accepts SimulationResponse directly — no re-simulation on backend.
+ * Returns structured report payload: narrative, chart data, yearly table, meta.
  */
 export async function generateAIReport(sim: SimulationResponse): Promise<any> {
   const res = await fetch(`${BASE}/generate-report`, {
@@ -35,7 +35,7 @@ export async function generateAIReport(sim: SimulationResponse): Promise<any> {
 }
 
 /**
- * Calls /generate-report/pdf — triggers browser download of self-contained HTML file.
+ * Triggers browser download of self-contained HTML report with Matplotlib charts.
  */
 export async function downloadPDFReport(sim: SimulationResponse): Promise<void> {
   const res = await fetch(`${BASE}/generate-report/pdf`, {
@@ -44,12 +44,58 @@ export async function downloadPDFReport(sim: SimulationResponse): Promise<void> 
     body: JSON.stringify(sim),
   })
   if (!res.ok) throw new Error('Failed to generate PDF report')
-
   const blob = await res.blob()
   const url  = URL.createObjectURL(blob)
   const a    = document.createElement('a')
-  a.href     = url
-  a.download = 'finsim-report.html'
-  a.click()
+  a.href = url; a.download = 'finsim-report.html'; a.click()
   URL.revokeObjectURL(url)
+}
+
+/**
+ * Run a single stress test scenario against the original simulation request.
+ */
+export async function runStressTest(
+  req: SimulationRequest,
+  scenarioKey: string,
+  shockYear: number,
+): Promise<any> {
+  const res = await fetch(`${BASE}/stress-test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      simulation:   req,
+      scenario_key: scenarioKey,
+      shock_year:   shockYear,
+      run_all:      false,
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err?.detail ?? `Stress test failed: HTTP ${res.status}`)
+  }
+  return res.json()
+}
+
+/**
+ * Run all 5 built-in scenarios and return comparative summary.
+ */
+export async function runAllStressTests(
+  req: SimulationRequest,
+  shockYear: number,
+): Promise<any> {
+  const res = await fetch(`${BASE}/stress-test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      simulation:   req,
+      scenario_key: 'market_crash_2008',
+      shock_year:   shockYear,
+      run_all:      true,
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err?.detail ?? `Stress test failed: HTTP ${res.status}`)
+  }
+  return res.json()
 }

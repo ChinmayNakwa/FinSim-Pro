@@ -153,7 +153,7 @@ def get_blended_forecast(
 # CORE MONTE CARLO SIMULATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_simulation(req: SimulationRequest, market_returns_by_asset: Dict[str, Tuple[float, float]]):
+def run_simulation(req: SimulationRequest, market_returns_by_asset: Dict[str, Tuple[float, float]], prebuilt_asset_rand: Optional[Dict[str, np.ndarray]] = None):
     """
     Full Monte Carlo simulation.
 
@@ -165,11 +165,15 @@ def run_simulation(req: SimulationRequest, market_returns_by_asset: Dict[str, Tu
     inflation      = rng.normal(0.06, 0.015, (N, Y))
     income_growth  = rng.normal(0.08, 0.02,  (N, Y))
 
-    # Per-asset random returns
-    asset_rand: Dict[str, np.ndarray] = {
-        ac: rng.normal(cagr, vol, (N, Y))
-        for ac, (cagr, vol) in market_returns_by_asset.items()
-    }
+
+    if prebuilt_asset_rand is not None:
+        asset_rand = prebuilt_asset_rand
+    else :
+        # Per-asset random returns
+        asset_rand: Dict[str, np.ndarray] = {
+            ac: rng.normal(cagr, vol, (N, Y))
+            for ac, (cagr, vol) in market_returns_by_asset.items()
+        }
 
     net_worth    = np.zeros((N, Y + 1), dtype=np.float64)
     savings_bal  = np.full(N, float(req.savings), dtype=np.float64)
