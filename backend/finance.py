@@ -46,9 +46,10 @@ def remaining_principal(
 
 
 def compute_drawdown(paths: np.ndarray) -> float:
-    running_max = np.maximum.accumulate(paths, axis=1)
-    dd = (running_max - paths) / np.maximum(np.abs(running_max), 1.0)
-    return float(np.round(dd.max(), 4))
+    positive_peak = np.maximum.accumulate(np.maximum(paths, 0), axis=1)
+    has_peak = positive_peak > 0
+    dd = np.where(has_peak, (positive_peak - paths) / positive_peak, 0.0)
+    return float(np.round(np.clip(dd, 0, 1).max(), 4))
 
 
 def sharpe_ratio(returns_arr: np.ndarray, risk_free: float = 0.065) -> float:
@@ -153,7 +154,7 @@ def get_blended_forecast(
 # CORE MONTE CARLO SIMULATION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def run_simulation(req: SimulationRequest, market_returns_by_asset: Dict[str, Tuple[float, float]], prebuilt_asset_rand: Optional[Dict[str, np.ndarray]] = None):
+def run_simulation(req, market_returns_by_asset, prebuilt_income_mult: Optional[np.ndarray] = None, prebuilt_asset_rand: Optional[Dict[str, np.ndarray]] = None):
     """
     Full Monte Carlo simulation.
 
@@ -207,9 +208,11 @@ def run_simulation(req: SimulationRequest, market_returns_by_asset: Dict[str, Tu
     asset_stcg_tax  = {ac: np.zeros((N, Y)) for ac in asset_balances}
     eff_rate_path   = np.zeros((N, Y))
     goal_shortfall  = {g.name: 0.0 for g in req.goals}
+    income_multipliers = prebuilt_income_mult if prebuilt_income_mult is not None else np.ones(Y)
+
 
     for y in range(Y):
-        monthly_income   = req.income   * np.prod(1 + income_growth[:, : y + 1], axis=1)
+        monthly_income   = (req.income * income_multipliers[y]) * np.prod(1 + income_growth[:, : y + 1], axis=1)
         monthly_expenses = req.expenses * np.prod(1 + inflation[:, : y + 1],     axis=1)
         annual_income    = monthly_income   * 12
         annual_expenses  = monthly_expenses * 12 + holiday_annual_cost
