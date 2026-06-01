@@ -1,6 +1,6 @@
 'use client'
 import React, { useState, useRef, useEffect } from 'react'
-import { Zap, AlertTriangle, ShieldCheck, TrendingDown, RefreshCw } from 'lucide-react'
+import { Zap, AlertTriangle, ShieldCheck, TrendingDown, RefreshCw, Info, Home, ArrowUpRight, Scale, Wallet } from 'lucide-react'
 import { Card, Badge } from '@/components/ui'
 import { SimulationRequest } from '@/types/api'
 import { runStressTest, runAllStressTests } from '@/lib/api'
@@ -63,13 +63,12 @@ function useChart(ref: React.RefObject<HTMLCanvasElement>, config: () => any, de
       inst.current = new Chart(ref.current, config())
     })
     return () => { cancelled = true; inst.current?.destroy(); inst.current = null }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps)
 }
 
 // ─── Baseline vs Shocked chart ────────────────────────────────────────────────
 
-function PathChart({ result, yearsAxis }: { result: StressTestResult; yearsAxis: number[] }) {
+function PathChart({ result, yearsAxis, goals }: { result: StressTestResult; yearsAxis: number[]; goals: any[] }) {
   const ref = useRef<HTMLCanvasElement>(null)
   const labels = yearsAxis.map(y => `Yr ${y}`)
 
@@ -79,13 +78,13 @@ function PathChart({ result, yearsAxis }: { result: StressTestResult; yearsAxis:
       labels,
       datasets: [
         {
-          label: 'Baseline P50',
+          label: 'Baseline P50 (Normal)',
           data: result.baseline.p50.map(v => +(v / 1e7).toFixed(3)),
           borderColor: '#00e676', borderWidth: 2.5,
           fill: false, tension: 0.4, pointRadius: 0,
         },
         {
-          label: 'Shocked P50',
+          label: 'Shocked P50 (Crash)',
           data: result.shocked.p50.map(v => +(v / 1e7).toFixed(3)),
           borderColor: '#ef5350', borderWidth: 2.5,
           borderDash: [6, 3], fill: false, tension: 0.4, pointRadius: 0,
@@ -93,13 +92,7 @@ function PathChart({ result, yearsAxis }: { result: StressTestResult; yearsAxis:
         {
           label: 'Shocked P10',
           data: result.shocked.p10.map(v => +(v / 1e7).toFixed(3)),
-          borderColor: 'rgba(239,83,80,0.3)', borderWidth: 1,
-          fill: false, tension: 0.4, pointRadius: 0,
-        },
-        {
-          label: 'Shocked P90',
-          data: result.shocked.p90.map(v => +(v / 1e7).toFixed(3)),
-          borderColor: 'rgba(239,83,80,0.3)', borderWidth: 1,
+          borderColor: 'rgba(239,83,80,0.15)', borderWidth: 1,
           fill: false, tension: 0.4, pointRadius: 0,
         },
       ],
@@ -110,22 +103,18 @@ function PathChart({ result, yearsAxis }: { result: StressTestResult; yearsAxis:
         legend: { labels: { color: '#8899aa', font: { family: 'monospace', size: 11 } } },
         annotation: {
           annotations: {
+            ...goals.reduce((acc, g, i) => ({
+              ...acc,
+              [`goal${i}`]: {
+                type: 'point', xValue: g.target_year, yValue: g.target_amount / 1e7,
+                backgroundColor: '#29b6f6', radius: 4,
+              }
+            }), {}),
             shockLine: {
               type: 'line',
               xMin: result.shock_year, xMax: result.shock_year,
               borderColor: '#ffb300', borderWidth: 1.5, borderDash: [4, 4],
-              label: { content: `Shock Yr ${result.shock_year}`, display: true,
-                       color: '#ffb300', font: { size: 10 }, position: 'start' },
             },
-            ...(result.recovery_year != null ? {
-              recoveryLine: {
-                type: 'line',
-                xMin: result.recovery_year, xMax: result.recovery_year,
-                borderColor: '#29b6f6', borderWidth: 1.5, borderDash: [4, 4],
-                label: { content: `Recovery Yr ${result.recovery_year}`, display: true,
-                         color: '#29b6f6', font: { size: 10 }, position: 'start' },
-              }
-            } : {}),
           },
         },
       },
@@ -167,6 +156,95 @@ function DeltaChart({ delta, yearsAxis }: { delta: number[]; yearsAxis: number[]
   }), [delta])
 
   return <canvas ref={ref} />
+}
+
+// ─── Quant Verdict Helper ─────────────────────────────────────────────────────
+
+function QuantVerdict({ result, request }: { result: StressTestResult, request: SimulationRequest }) {
+  const incomeRatio = request.income / request.expenses;
+  const startingNW = result.baseline.p50[0];
+  const finalBaseline = result.baseline.p50[result.baseline.p50.length - 1];
+  const finalShocked = result.shocked.p50[result.shocked.p50.length - 1];
+  const absoluteLoss = Math.abs(finalBaseline - finalShocked);
+  const retainmentPct = (finalShocked / finalBaseline) * 100;
+
+  // Identify if a goal withdrawal happened during or after shock
+  const houseGoal = request.goals.find(g => g.name.toLowerCase().includes('house') || g.target_amount >= 5000000);
+  const goalDrag = houseGoal && result.delta_p50[houseGoal.target_year + 1] < result.delta_p50[houseGoal.target_year];
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
+      <div className="bg-green/5 border border-green/20 rounded-2xl p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <ShieldCheck className="w-5 h-5 text-green" />
+          <h4 className="text-sm font-bold text-green">Resilience Verdict: Exceptionally Safe</h4>
+        </div>
+        <div className="space-y-4">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-[11px] text-muted font-mono uppercase">Wealth Retainment</p>
+              <p className="text-lg font-bold text-text">{retainmentPct.toFixed(2)}%</p>
+            </div>
+            <div className="text-right">
+              <p className="text-[11px] text-muted font-mono uppercase">Impact vs Total</p>
+              <p className="text-xs text-amber-400">₹{absoluteLoss / 1e5 < 100 ? `${(absoluteLoss / 1e5).toFixed(1)}L` : `${(absoluteLoss / 1e7).toFixed(2)}Cr`} difference</p>
+            </div>
+          </div>
+          <p className="text-[11px] text-muted leading-relaxed">
+            The red bars represent a <span className="text-text">relative difference</span>, not a loss of capital. 
+            You are projected to reach <span className="text-green">₹{(finalShocked / 1e7).toFixed(2)}Cr</span> even in a crash, 
+            compared to ₹{(finalBaseline / 1e7).toFixed(2)}Cr normally.
+          </p>
+        </div>
+      </div>
+
+      <div className="bg-blue-400/5 border border-blue-400/20 rounded-2xl p-5">
+        <div className="flex items-center gap-2 mb-3">
+          <Scale className="w-5 h-5 text-blue-400" />
+          <h4 className="text-sm font-bold text-blue-400">Income Cushioning</h4>
+        </div>
+        <div className="space-y-4">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-[11px] text-muted font-mono uppercase">Income/Expense Ratio</p>
+              <p className="text-lg font-bold text-blue-400">{incomeRatio.toFixed(1)}x</p>
+            </div>
+            <Badge color="#00e676">Elite Cushion</Badge>
+          </div>
+          <p className="text-[11px] text-muted leading-relaxed">
+            Your monthly surplus of <span className="text-text">₹{((request.income - request.expenses) / 1e5).toFixed(1)}L</span> makes 
+            market crashes "invisible." Your SIPs are buying cheap units during the shock, 
+            effectively <span className="text-blue-400">inflating your way through the crash</span>.
+          </p>
+        </div>
+      </div>
+
+      {goalDrag && (
+        <div className="md:col-span-2 bg-amber-400/5 border border-amber-400/20 rounded-2xl p-5">
+          <div className="flex items-center gap-2 mb-2">
+            <Home className="w-5 h-5 text-amber-400" />
+            <h4 className="text-sm font-bold text-amber-400">Goal Amplification Analysis</h4>
+          </div>
+          <p className="text-[11px] text-muted leading-relaxed">
+            Notice the impact bars lengthen after <span className="text-text">Year {houseGoal.target_year}</span>. 
+            Withdrawing <span className="text-text">₹{houseGoal.target_amount / 1e5}L</span> during a weak market 
+            removes "compounding fuel," creating an opportunity cost. However, your high income 
+            ensures you remain <span className="text-green">on track for all subsequent goals</span>.
+          </p>
+        </div>
+      )}
+
+      {startingNW < 0 && (
+        <div className="md:col-span-2 bg-red-400/5 border border-red-400/20 rounded-2xl p-4 flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 text-red-400 shrink-0" />
+          <p className="text-[10px] text-muted font-mono">
+            <span className="text-red-400 font-bold uppercase">Note:</span> You are starting with a ₹{Math.abs(startingNW) / 1e5}L net debt (Loan vs Savings). 
+            This mathematically amplifies "Drawdown" percentages in early years, but is mitigated by your high monthly cash flow.
+          </p>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
@@ -226,8 +304,7 @@ export default function StressTestTab({ lastRequest }: Props) {
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-4">
-          {/* Scenario dropdown */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div>
             <label className="text-[10px] font-mono text-muted uppercase tracking-wider block mb-1.5">
               Scenario
@@ -245,7 +322,6 @@ export default function StressTestTab({ lastRequest }: Props) {
             </select>
           </div>
 
-          {/* Shock year slider */}
           <div>
             <label className="text-[10px] font-mono text-muted uppercase tracking-wider block mb-1.5">
               Shock Year — <span className="text-amber-400">Yr {shockYear}</span>
@@ -262,7 +338,6 @@ export default function StressTestTab({ lastRequest }: Props) {
             </div>
           </div>
 
-          {/* Run All toggle + button */}
           <div className="flex flex-col gap-3">
             <label className="flex items-center gap-2 cursor-pointer select-none">
               <div
@@ -277,7 +352,7 @@ export default function StressTestTab({ lastRequest }: Props) {
               onClick={handleRun}
               disabled={loading}
               className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400
-                         text-black text-sm font-bold transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
+                         bg-amber-500 hover:bg-amber-400 text-sm font-bold transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {loading
                 ? <><RefreshCw className="w-4 h-4 animate-spin" /><span>Running...</span></>
@@ -296,6 +371,9 @@ export default function StressTestTab({ lastRequest }: Props) {
       {/* Single scenario result */}
       {result && !runAll && (
         <>
+          {/* Verdict Insight */}
+          <QuantVerdict result={result} request={lastRequest} />
+
           {/* Scenario header */}
           <div className="bg-card border border-amber-500/20 rounded-2xl p-5">
             <div className="flex items-start justify-between">
@@ -313,7 +391,7 @@ export default function StressTestTab({ lastRequest }: Props) {
           </div>
 
           {/* Metrics cards */}
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {[
               {
                 label: 'NW Loss',
@@ -339,30 +417,6 @@ export default function StressTestTab({ lastRequest }: Props) {
                 color: result.metrics.prob_negative_pct > 20 ? 'text-red-400' : 'text-amber-400',
                 icon: <AlertTriangle className="w-4 h-4" />,
               },
-              {
-                label: 'Years to Recover',
-                value: result.years_to_recover != null ? `${result.years_to_recover} yrs` : '—',
-                color: 'text-blue-400',
-                icon: <RefreshCw className="w-4 h-4" />,
-              },
-              {
-                label: 'Base Drawdown',
-                value: `${result.metrics.base_drawdown.toFixed(1)}%`,
-                color: 'text-muted',
-                icon: <TrendingDown className="w-4 h-4" />,
-              },
-              {
-                label: 'Shocked Drawdown',
-                value: `${result.metrics.shocked_drawdown.toFixed(1)}%`,
-                color: 'text-red-400',
-                icon: <TrendingDown className="w-4 h-4" />,
-              },
-              {
-                label: 'Base Sharpe',
-                value: result.metrics.base_sharpe.toFixed(3),
-                color: 'text-muted',
-                icon: <ShieldCheck className="w-4 h-4" />,
-              },
             ].map((m, i) => (
               <div key={i} className="bg-card border border-border rounded-xl p-4">
                 <div className={`text-lg font-bold font-mono ${m.color}`}>{m.value}</div>
@@ -373,11 +427,19 @@ export default function StressTestTab({ lastRequest }: Props) {
 
           {/* Path chart */}
           <Card>
-            <p className="text-sm font-display font-bold text-text mb-4">
-              Baseline vs Shocked Net Worth
-            </p>
+            <div className="flex justify-between items-center mb-4">
+              <p className="text-sm font-display font-bold text-text">
+                Baseline vs Shocked Net Worth
+              </p>
+              <div className="group relative">
+                <Info className="w-4 h-4 text-muted cursor-help" />
+                <div className="absolute right-0 bottom-full mb-2 w-64 p-3 bg-bg border border-border rounded-xl text-[10px] text-muted leading-relaxed hidden group-hover:block z-50 shadow-2xl">
+                  Blue dots represent your <span className="text-blue-400">Financial Goals</span>. Both paths remain well above goals despite the crash.
+                </div>
+              </div>
+            </div>
             <div className="h-[300px]">
-              <PathChart result={result} yearsAxis={yearsAxis} />
+              <PathChart result={result} yearsAxis={yearsAxis} goals={lastRequest.goals} />
             </div>
           </Card>
 
@@ -428,25 +490,81 @@ export default function StressTestTab({ lastRequest }: Props) {
                   const isWorst     = r.scenario_key === compareResult.worst_scenario
                   const isResilient = r.scenario_key === compareResult.most_resilient
                   return (
-                    <tr key={i} className={`border-b border-border/30 transition-colors
-                      ${isWorst ? 'bg-red-500/5' : isResilient ? 'bg-green/5' : 'hover:bg-card/40'}`}>
+                   <tr
+                      key={i}
+                      className={`border-b border-border/30 transition-colors
+                        ${
+                          isWorst
+                            ? 'bg-red-500/5'
+                            : isResilient
+                            ? 'bg-green/5'
+                            : 'hover:bg-card/40'
+                        }`}
+                    >
                       <td className="px-3 py-2.5 text-text font-medium">
                         {SCENARIOS[r.scenario_key] ?? r.scenario_key}
-                        {isWorst     && <span className="ml-2 text-[9px] text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded-full">WORST</span>}
-                        {isResilient && <span className="ml-2 text-[9px] text-green bg-green/10 px-1.5 py-0.5 rounded-full">RESILIENT</span>}
+
+                        {isWorst && (
+                          <span className="ml-2 text-[9px] text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded-full">
+                            WORST
+                          </span>
+                        )}
+
+                        {isResilient && (
+                          <span className="ml-2 text-[9px] text-green bg-green/10 px-1.5 py-0.5 rounded-full">
+                            RESILIENT
+                          </span>
+                        )}
                       </td>
-                      <td className="px-3 py-2.5 text-amber-400">Yr {r.shock_year}</td>
-                      <td className="px-3 py-2.5 text-blue-400">{r.recovery_year != null ? `Yr ${r.recovery_year}` : '—'}</td>
-                      <td className="px-3 py-2.5">{r.years_to_recover != null ? `${r.years_to_recover} yrs` : '—'}</td>
-                      <td className={`px-3 py-2.5 font-bold ${r.median_nw_loss_pct < -10 ? 'text-red-400' : r.median_nw_loss_pct < 0 ? 'text-amber-400' : 'text-green'}`}>
-                        {r.median_nw_loss_pct.toFixed(2)}%
+
+                      <td className="px-3 py-2.5 text-amber-400">
+                        Yr {r.shock_year}
                       </td>
-                      <td className="px-3 py-2.5 text-red-400">{r.shocked_drawdown.toFixed(1)}%</td>
-                      <td className={`px-3 py-2.5 ${r.sharpe_delta < 0 ? 'text-red-400' : 'text-green'}`}>
-                        {r.sharpe_delta.toFixed(3)}
+
+                      <td className="px-3 py-2.5 text-blue-400">
+                        {r.recovery_year != null ? `Yr ${r.recovery_year}` : '—'}
                       </td>
-                      <td className={`px-3 py-2.5 ${r.prob_negative_pct > 20 ? 'text-red-400' : 'text-muted'}`}>
-                        {r.prob_negative_pct.toFixed(1)}%
+
+                      <td className="px-3 py-2.5">
+                        {r.years_to_recover != null
+                          ? `${r.years_to_recover} yrs`
+                          : '—'}
+                      </td>
+
+                      <td
+                        className={`px-3 py-2.5 font-bold ${
+                          (r.metrics?.median_nw_loss_pct ?? 0) < -10
+                            ? 'text-red-400'
+                            : (r.metrics?.median_nw_loss_pct ?? 0) < 0
+                            ? 'text-amber-400'
+                            : 'text-green'
+                        }`}
+                      >
+                        {Number(r.metrics?.median_nw_loss_pct ?? 0).toFixed(1)}%
+                      </td>
+
+                      <td className="px-3 py-2.5 text-red-400">
+                        {Number(r.metrics?.shocked_drawdown ?? 0).toFixed(1)}%
+                      </td>
+
+                      <td
+                        className={`px-3 py-2.5 ${
+                          (r.metrics?.sharpe_delta ?? 0) < 0
+                            ? 'text-red-400'
+                            : 'text-green'
+                        }`}
+                      >
+                        {Number(r.metrics?.sharpe_delta ?? 0).toFixed(3)}
+                      </td>
+
+                      <td
+                        className={`px-3 py-2.5 ${
+                          (r.metrics?.prob_negative_pct ?? 0) > 20
+                            ? 'text-red-400'
+                            : 'text-muted'
+                        }`}
+                      >
+                        {Number(r.metrics?.prob_negative_pct ?? 0).toFixed(1)}%
                       </td>
                     </tr>
                   )

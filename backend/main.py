@@ -34,7 +34,10 @@ from models import (
     YearlyRow,
     StressTestRequest, 
     StressTestResponse,
-    StressCompareResponse
+    StressCompareResponse,
+    OptimizeRequest, 
+    RetirementPlanRequest, 
+    TaxHarvestRequest,
 )
 from tax_engine import compute_tax_on_income
 from finance import (
@@ -46,6 +49,9 @@ from finance import (
     sharpe_ratio,
     compute_drawdown,
     suggest_rebalancing,
+    optimize_portfolio, 
+    plan_retirement,
+    harvest_tax_opportunities
 )
 
 from stress_test import (
@@ -431,6 +437,48 @@ def target_allocation(
     return {k: round(v * 100, 2) for k, v in alloc.items()}
 
 
+@app.post("/optimize", summary="Markowitz efficient frontier for current holdings")
+def portfolio_optimize(req: OptimizeRequest):
+    if len(req.simulation.portfolio_holdings) < 2:
+        raise HTTPException(400, "At least 2 holdings required.")
+    _, _, asset_forecasts = get_blended_forecast(
+        req.simulation.portfolio_holdings, req.simulation.sim_years
+    )
+    return optimize_portfolio(
+        req.simulation.portfolio_holdings,
+        asset_forecasts,
+        risk_free_rate=req.simulation.risk_free_rate,
+    )
+ 
+ 
+@app.post("/retirement/plan", summary="FIRE date estimator with SWR sensitivity")
+def retirement_plan(req: RetirementPlanRequest):
+    if req.annual_expenses <= 0:
+        raise HTTPException(400, "annual_expenses must be > 0.")
+    return plan_retirement(
+        current_age=req.current_age,
+        current_net_worth=req.current_net_worth,
+        annual_expenses=req.annual_expenses,
+        annual_savings=req.annual_savings,
+        expected_cagr=req.expected_cagr,
+        inflation_rate=req.inflation_rate,
+        swr_rates=req.swr_rates,
+        max_years=req.max_years,
+    )
+ 
+ 
+@app.post("/tax/harvest", summary="Flag holdings for tax-loss harvesting or low-tax gains")
+def tax_harvest(req: TaxHarvestRequest):
+    if not req.holdings:
+        raise HTTPException(400, "At least one holding required.")
+    # Build minimal asset_forecasts from ASSET_DEFAULTS for reference
+    from models import ASSET_DEFAULTS
+    asset_forecasts = {
+        h.asset_class: ASSET_DEFAULTS.get(h.asset_class, ASSET_DEFAULTS["Indian Equity"])
+        for h in req.holdings
+    }
+    return harvest_tax_opportunities(req.holdings, asset_forecasts, req.tax_cfg)
+
 @app.post(
     "/stress-test",
     summary="Run macro shock stress test against simulation",
@@ -462,7 +510,7 @@ def stress_test(req: StressTestRequest):
  
     if req.run_all:
         results = run_all_scenarios(sim_req, market_returns_by_asset, req.shock_year)
-        worst      = max(results, key=lambda r: abs(r["median_nw_loss_pct"]))
+        worst      = max(results, key=lambda r: abs(r["metrics"]["median_nw_loss_pct"]))
         resilient  = min(
             [r for r in results if r["years_to_recover"] is not None],
             key=lambda r: r["years_to_recover"],

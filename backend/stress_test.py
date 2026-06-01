@@ -180,8 +180,11 @@ def run_stress_test(
 
     # Recovery Year: First year shocked median >= baseline median
     recovery_year = None
+    # Portfolio value before crash
+    pre_crash_level = shocked_paths["p50"][max(shock_year - 1, 0)]
+
     for y in range(shock_year, Y + 1):
-        if shocked_paths["p50"][y] >= base_paths["p50"][y]:
+        if shocked_paths["p50"][y] >= pre_crash_level:
             recovery_year = y
             break
 

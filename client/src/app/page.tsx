@@ -155,8 +155,8 @@ export default function Home() {
                   <NetWorthChart data={result} currentRequest={lastRequest}
                     baseline={baselineResult} baselineRequest={baselineRequest} />
                 </div>
-                <div className={activeTab === 1 ? 'block' : 'hidden'}><PortfolioTab data={result} /></div>
-                <div className={activeTab === 2 ? 'block' : 'hidden'}><TaxTab data={result} /></div>
+                <div className={activeTab === 1 ? 'block' : 'hidden'}><PortfolioTab data={result} lastRequest={lastRequest} /></div>
+                <div className={activeTab === 2 ? 'block' : 'hidden'}><TaxTab data={result} lastRequest={lastRequest} /></div>
                 <div className={activeTab === 3 ? 'block' : 'hidden'}><GoalsTab data={result} /></div>
                 <div className={activeTab === 4 ? 'block' : 'hidden'}><RebalanceTab data={result} /></div>
                 <div className={activeTab === 5 ? 'block' : 'hidden'}><YearlyTable data={result} /></div>

@@ -230,6 +230,26 @@ class SimulationResponse(BaseModel):
 
     # Regime comparison
     regime_comparison: List[dict]
+ 
+class OptimizeRequest(BaseModel):
+    simulation: SimulationRequest
+ 
+ 
+class RetirementPlanRequest(BaseModel):
+    current_age: int
+    current_net_worth: float
+    annual_expenses: float
+    annual_savings: float
+    expected_cagr: float = 0.12
+    inflation_rate: float = 0.06
+    swr_rates: List[float] = [0.03, 0.035, 0.04, 0.045, 0.05]
+    max_years: int = 40
+ 
+ 
+class TaxHarvestRequest(BaseModel):
+    holdings: List[PortfolioHoldingIn]
+    tax_cfg: TaxConfigIn = Field(default_factory=TaxConfigIn)
+
 
 
 
