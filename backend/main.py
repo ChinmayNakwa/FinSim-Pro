@@ -224,7 +224,10 @@ def simulate(req: SimulationRequest):
     final_p10, final_p50, final_p90 = p10[-1], p50[-1], p90[-1]
     prob_positive = float(np.mean(nw[:, -1] > 0) * 100)
     prob_crore    = float(np.mean(nw[:, -1] > 1e7) * 100)
-    max_dd        = compute_drawdown(nw)
+    # compute_drawdown now returns per-path (N,) array; extract percentiles
+    dd_per_path   = compute_drawdown(nw)
+    max_dd_p50    = float(np.percentile(dd_per_path, 50))
+    max_dd_p90    = float(np.percentile(dd_per_path, 90))
     sharpe        = sharpe_ratio(nw, risk_free=req.risk_free_rate)
     fire_prob     = float(np.mean(nw[:, -1] >= fire_target) * 100)
     years_to_fire = next(
@@ -303,7 +306,10 @@ def simulate(req: SimulationRequest):
         for h in req.portfolio_holdings
     }
     target_alloc = get_age_based_allocation(req.age, req.risk_tolerance)
-    reb_raw      = suggest_rebalancing(current_alloc, target_alloc, total_value)
+    reb_raw      = suggest_rebalancing(
+        current_alloc, target_alloc, total_value,
+        drift_threshold=req.rebalance_drift_threshold,
+    )
     rebalance    = RebalanceResult(
         needed=reb_raw["needed"],
         total_drift=reb_raw["total_drift"],
@@ -369,7 +375,8 @@ def simulate(req: SimulationRequest):
         p90_net_worth_final=final_p90,
         prob_positive_pct=prob_positive,
         prob_crore_pct=prob_crore,
-        max_drawdown=max_dd,
+        max_drawdown_p50=max_dd_p50,
+        max_drawdown_p90=max_dd_p90,
         sharpe_ratio=sharpe,
         fire_number=fire_target,
         fire_prob_pct=fire_prob,
@@ -560,4 +567,3 @@ def list_scenarios():
         }
         for key, s in SCENARIOS.items()
     }
- 

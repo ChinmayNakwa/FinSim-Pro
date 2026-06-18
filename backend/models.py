@@ -25,6 +25,18 @@ STANDARD_DEDUCTION_OLD        = 50_000
 SECTION_80C                   = 150_000
 DEFAULT_SECTION_80D           = 25_000
 
+# ── Single source of truth for LTCG holding-period thresholds (days) ─────────
+# Imported by both tax_engine.py and finance.py to eliminate duplication.
+LTCG_HOLDING_DAYS: dict = {
+    "Indian Equity":        365,
+    "Nifty Bank":           365,
+    "Nifty IT":             365,
+    "International Equity": 730,
+    "Gold":                 1095,
+    "Real Estate":          730,
+    "Debt/Bonds":           0,   # always STCG — taxed as income slab
+}
+
 ALL_MONTHS = {
     1: "Jan (Pongal/Lohri)", 2: "Feb (Valentine's)", 3: "Mar (Holi)",
     4: "Apr (Ugadi/Baisakhi)", 5: "May", 6: "Jun",
@@ -51,7 +63,9 @@ class GoalIn(BaseModel):
     name: str
     target_amount: float
     target_year: int
-    priority: str = "Important"
+    priority: str = "Important"       # "Critical" | "Important" | "Nice-to-have"
+    # FIX: goals now optionally grow with CPI so ₹50L in year 10 stays realistic
+    inflation_adjust: bool = True
 
 
 class PortfolioHoldingIn(BaseModel):
@@ -78,6 +92,9 @@ class TaxConfigIn(BaseModel):
     re_stcg_rate: float = 0.30
     debt_ltcg_rate: float = 0.30
     debt_stcg_rate: float = 0.30
+    # FIX: International Equity rates were hardcoded 0.20/0.30 in tax_engine.py
+    intl_ltcg_rate: float = 0.20
+    intl_stcg_rate: float = 0.30
 
 
 class SimulationRequest(BaseModel):
@@ -110,6 +127,12 @@ class SimulationRequest(BaseModel):
     include_holidays: bool = True
     holiday_spike_pct: float = DEFAULT_HOLIDAY_SPENDING_SPIKE
     holiday_months: List[int] = Field(default_factory=lambda: DEFAULT_HOLIDAY_MONTHS)
+
+    # FIX: rng_seed was hardcoded 42 inside run_simulation — now caller-controlled
+    rng_seed: int = 42
+
+    # FIX: drift threshold was hardcoded 0.05 inside suggest_rebalancing
+    rebalance_drift_threshold: float = 0.05
 
     # Goals
     goals: List[GoalIn] = Field(default_factory=list)
@@ -185,7 +208,9 @@ class SimulationResponse(BaseModel):
     p90_net_worth_final: float
     prob_positive_pct: float
     prob_crore_pct: float
-    max_drawdown: float
+    # FIX: was a single scalar (worst path); now p50 + p90 for meaningful risk view
+    max_drawdown_p50: float
+    max_drawdown_p90: float
     sharpe_ratio: float
     fire_number: float
     fire_prob_pct: float
@@ -216,8 +241,8 @@ class SimulationResponse(BaseModel):
 
     # Asset-level
     asset_forecasts: List[AssetForecastItem]
-    asset_final_values: dict      # {asset_class: median_final_value}
-    asset_tax_summary: List[dict] # [{asset_class, ltcg_tax, stcg_tax, total_tax}]
+    asset_final_values: dict
+    asset_tax_summary: List[dict]
 
     # Goals
     goal_results: List[GoalResult]
@@ -230,11 +255,12 @@ class SimulationResponse(BaseModel):
 
     # Regime comparison
     regime_comparison: List[dict]
- 
+
+
 class OptimizeRequest(BaseModel):
     simulation: SimulationRequest
- 
- 
+
+
 class RetirementPlanRequest(BaseModel):
     current_age: int
     current_net_worth: float
@@ -244,13 +270,11 @@ class RetirementPlanRequest(BaseModel):
     inflation_rate: float = 0.06
     swr_rates: List[float] = [0.03, 0.035, 0.04, 0.045, 0.05]
     max_years: int = 40
- 
- 
+
+
 class TaxHarvestRequest(BaseModel):
     holdings: List[PortfolioHoldingIn]
     tax_cfg: TaxConfigIn = Field(default_factory=TaxConfigIn)
-
-
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -259,10 +283,10 @@ class TaxHarvestRequest(BaseModel):
 
 class StressTestRequest(BaseModel):
     simulation: SimulationRequest
-    scenario_key: str = "market_crash_2008"   # or "custom"
-    shock_year: int = 3                        # which sim-year the shock hits
-    custom_scenario: Optional[dict] = None    # only needed if scenario_key="custom"
-    run_all: bool = False                      # if True, ignores scenario_key and runs all
+    scenario_key: str = "market_crash_2008"
+    shock_year: int = 3
+    custom_scenario: Optional[dict] = None
+    run_all: bool = False
 
 
 class StressMetrics(BaseModel):
@@ -283,8 +307,8 @@ class StressTestResponse(BaseModel):
     shock_year: int
     recovery_year: Optional[int]
     years_to_recover: Optional[int]
-    baseline: dict        # {p10, p50, p90} lists
-    shocked: dict         # {p10, p50, p90} lists
+    baseline: dict
+    shocked: dict
     delta_p50: List[float]
     metrics: StressMetrics
     scenario_params: dict
@@ -293,5 +317,5 @@ class StressTestResponse(BaseModel):
 class StressCompareResponse(BaseModel):
     """Returned when run_all=True — summary across all scenarios."""
     results: List[dict]
-    worst_scenario: str     # scenario_key with highest median_nw_loss_pct
-    most_resilient: str     # scenario_key with lowest years_to_recover
+    worst_scenario: str
+    most_resilient: str

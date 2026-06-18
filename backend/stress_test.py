@@ -189,8 +189,10 @@ def run_stress_test(
             break
 
     # Metrics
-    base_dd    = compute_drawdown(baseline_nw)
-    shocked_dd = compute_drawdown(shocked_nw)
+    # compute_drawdown now returns per-path (N,) array — take p50 for a
+    # representative scalar, matching how main.py now handles this
+    base_dd    = float(np.percentile(compute_drawdown(baseline_nw), 50))
+    shocked_dd = float(np.percentile(compute_drawdown(shocked_nw),  50))
     base_sharpe    = sharpe_ratio(baseline_nw, req.risk_free_rate)
     shocked_sharpe = sharpe_ratio(shocked_nw,  req.risk_free_rate)
     
