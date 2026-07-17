@@ -2,7 +2,7 @@
 
 FinSim Pro is a high-fidelity financial simulation engine designed to provide autonomous and semi-autonomous financial planning insights. It utilizes Monte Carlo simulations to project net worth across thousands of possible market scenarios, integrated with an agentic AI layer that understands complex Indian tax laws and investment strategies to act as a digital financial advisor.
 
-<img width="1913" height="1042" alt="image" src="https://github.com/user-attachments/assets/b5441926-d0b8-4283-897f-6cec964244bb" />
+<img width="1917" height="1042" alt="Screenshot 2026-07-17 220313" src="https://github.com/user-attachments/assets/91a0e3fc-852a-4245-8bf8-8402a4f531d1" />
 
 
 ## What does it do?
