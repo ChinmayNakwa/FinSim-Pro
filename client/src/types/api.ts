@@ -82,7 +82,8 @@ export interface GoalResult {
   priority: string
   projected_nw_at_goal: number
   percent_funded: number
-  shortfall: number
+  /** Probability (0–100) the goal is fully funded across Monte Carlo paths. */
+  prob_funded_pct: number
   on_track: boolean
 }
 

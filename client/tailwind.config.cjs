@@ -14,6 +14,7 @@ module.exports = {
       colors: {
         bg:     '#080c10',
         surface:'#0f1419',
+        card:   '#121a23',
         border: '#1e2a35',
         green:  '#00e676',
         amber:  '#ffb300',

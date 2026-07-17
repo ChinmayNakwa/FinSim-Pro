@@ -3,7 +3,7 @@ import React, { useState, useRef, useEffect } from 'react'
 import { Zap, AlertTriangle, ShieldCheck, TrendingDown, RefreshCw, Info, Home, ArrowUpRight, Scale, Wallet } from 'lucide-react'
 import { Card, Badge } from '@/components/ui'
 import { SimulationRequest } from '@/types/api'
-import { runStressTest, runAllStressTests } from '@/lib/api'
+import { runStressTest, runAllStressTests, fetchStressScenarios } from '@/lib/api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,7 +42,8 @@ interface Props {
   lastRequest: SimulationRequest | null
 }
 
-const SCENARIOS: Record<string, string> = {
+// Fallback used until the backend scenario list (/stress-test/scenarios) loads.
+const FALLBACK_SCENARIOS: Record<string, string> = {
   market_crash_2008: '2008 Global Financial Crisis',
   covid_2020:        'COVID-19 Market Crash',
   income_loss:       'Job Loss / Income Disruption',
@@ -166,7 +167,16 @@ function QuantVerdict({ result, request }: { result: StressTestResult, request: 
   const finalBaseline = result.baseline.p50[result.baseline.p50.length - 1];
   const finalShocked = result.shocked.p50[result.shocked.p50.length - 1];
   const absoluteLoss = Math.abs(finalBaseline - finalShocked);
-  const retainmentPct = (finalShocked / finalBaseline) * 100;
+
+  // Verdict is driven by the WORST dip vs baseline (the trough), which is what
+  // actually differs between scenarios — the terminal difference recovers to ~0.
+  const troughLoss = result.metrics.median_nw_loss_pct;        // negative %
+  const worstRetainment = Math.max(0, 100 + troughLoss);
+  const verdict =
+    troughLoss >= -10 ? { label: 'Exceptionally Resilient', color: '#00e676' } :
+    troughLoss >= -25 ? { label: 'Resilient',               color: '#00e676' } :
+    troughLoss >= -50 ? { label: 'Moderate Impact',         color: '#ffb300' } :
+                        { label: 'Severe Impact',           color: '#ff4444' };
 
   // Identify if a goal withdrawal happened during or after shock
   const houseGoal = request.goals.find(g => g.name.toLowerCase().includes('house') || g.target_amount >= 5000000);
@@ -174,26 +184,27 @@ function QuantVerdict({ result, request }: { result: StressTestResult, request: 
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-6">
-      <div className="bg-green/5 border border-green/20 rounded-2xl p-5">
+      <div className="rounded-2xl p-5" style={{ background: `${verdict.color}0d`, border: `1px solid ${verdict.color}33` }}>
         <div className="flex items-center gap-2 mb-3">
-          <ShieldCheck className="w-5 h-5 text-green" />
-          <h4 className="text-sm font-bold text-green">Resilience Verdict: Exceptionally Safe</h4>
+          <ShieldCheck className="w-5 h-5" style={{ color: verdict.color }} />
+          <h4 className="text-sm font-bold" style={{ color: verdict.color }}>Resilience Verdict: {verdict.label}</h4>
         </div>
         <div className="space-y-4">
           <div className="flex justify-between items-start">
             <div>
-              <p className="text-[11px] text-muted font-mono uppercase">Wealth Retainment</p>
-              <p className="text-lg font-bold text-text">{retainmentPct.toFixed(2)}%</p>
+              <p className="text-[11px] text-muted font-mono uppercase">Worst-Case Retainment</p>
+              <p className="text-lg font-bold text-text">{worstRetainment.toFixed(1)}%</p>
             </div>
             <div className="text-right">
-              <p className="text-[11px] text-muted font-mono uppercase">Impact vs Total</p>
-              <p className="text-xs text-amber-400">₹{absoluteLoss / 1e5 < 100 ? `${(absoluteLoss / 1e5).toFixed(1)}L` : `${(absoluteLoss / 1e7).toFixed(2)}Cr`} difference</p>
+              <p className="text-[11px] text-muted font-mono uppercase">Deepest Dip vs Baseline</p>
+              <p className="text-xs" style={{ color: verdict.color }}>{troughLoss.toFixed(1)}%</p>
             </div>
           </div>
           <p className="text-[11px] text-muted leading-relaxed">
-            The red bars represent a <span className="text-text">relative difference</span>, not a loss of capital. 
-            You are projected to reach <span className="text-green">₹{(finalShocked / 1e7).toFixed(2)}Cr</span> even in a crash, 
-            compared to ₹{(finalBaseline / 1e7).toFixed(2)}Cr normally.
+            At its worst point this scenario leaves your median net worth{' '}
+            <span style={{ color: verdict.color }}>{Math.abs(troughLoss).toFixed(1)}% below</span> the no-shock path.
+            By the final year it recovers to <span className="text-green">₹{(finalShocked / 1e7).toFixed(2)}Cr</span>{' '}
+            vs ₹{(finalBaseline / 1e7).toFixed(2)}Cr normally.
           </p>
         </div>
       </div>
@@ -250,6 +261,7 @@ function QuantVerdict({ result, request }: { result: StressTestResult, request: 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function StressTestTab({ lastRequest }: Props) {
+  const [scenarios, setScenarios]     = useState<Record<string, string>>(FALLBACK_SCENARIOS)
   const [scenarioKey, setScenarioKey] = useState('market_crash_2008')
   const [shockYear, setShockYear]     = useState(3)
   const [runAll, setRunAll]           = useState(false)
@@ -279,6 +291,30 @@ export default function StressTestTab({ lastRequest }: Props) {
       setLoading(false)
     }
   }
+
+  // Load the scenario list from the backend (single source of truth), falling
+  // back to the hardcoded map if the request fails.
+  useEffect(() => {
+    let alive = true
+    fetchStressScenarios()
+      .then(data => {
+        if (!alive) return
+        setScenarios(
+          Object.fromEntries(Object.entries(data).map(([k, v]) => [k, v.label]))
+        )
+      })
+      .catch(() => { /* keep fallback */ })
+    return () => { alive = false }
+  }, [])
+
+  // Auto-run the currently-selected scenario whenever a fresh simulation
+  // request arrives, so the tab is pre-filled without a manual click.
+  // (The page hands us a new `lastRequest` object on every run.)
+  useEffect(() => {
+    if (!lastRequest) return
+    handleRun()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastRequest])
 
   if (!lastRequest) {
     return (
@@ -316,7 +352,7 @@ export default function StressTestTab({ lastRequest }: Props) {
               className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-sm text-text
                          focus:outline-none focus:border-green/50 disabled:opacity-40 transition-colors"
             >
-              {Object.entries(SCENARIOS).map(([k, v]) => (
+              {Object.entries(scenarios).map(([k, v]) => (
                 <option key={k} value={k}>{v}</option>
               ))}
             </select>
@@ -394,7 +430,7 @@ export default function StressTestTab({ lastRequest }: Props) {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {[
               {
-                label: 'NW Loss',
+                label: 'Worst Dip vs Baseline',
                 value: `${result.metrics.median_nw_loss_pct.toFixed(1)}%`,
                 color: result.metrics.median_nw_loss_pct < 0 ? 'text-red-400' : 'text-green',
                 icon: <TrendingDown className="w-4 h-4" />,
@@ -412,7 +448,7 @@ export default function StressTestTab({ lastRequest }: Props) {
                 icon: <ShieldCheck className="w-4 h-4" />,
               },
               {
-                label: 'Prob Negative',
+                label: 'Odds Below Pre-Shock',
                 value: `${result.metrics.prob_negative_pct.toFixed(1)}%`,
                 color: result.metrics.prob_negative_pct > 20 ? 'text-red-400' : 'text-amber-400',
                 icon: <AlertTriangle className="w-4 h-4" />,
@@ -465,10 +501,10 @@ export default function StressTestTab({ lastRequest }: Props) {
             <p className="text-sm font-display font-bold text-text">All Scenarios Comparison</p>
             <div className="flex gap-2">
               <Badge color="#ef5350">
-                Worst: {SCENARIOS[compareResult.worst_scenario] ?? compareResult.worst_scenario}
+                Worst: {scenarios[compareResult.worst_scenario] ?? compareResult.worst_scenario}
               </Badge>
               <Badge color="#00e676">
-                Most Resilient: {SCENARIOS[compareResult.most_resilient] ?? compareResult.most_resilient}
+                Most Resilient: {scenarios[compareResult.most_resilient] ?? compareResult.most_resilient}
               </Badge>
             </div>
           </div>
@@ -502,7 +538,7 @@ export default function StressTestTab({ lastRequest }: Props) {
                         }`}
                     >
                       <td className="px-3 py-2.5 text-text font-medium">
-                        {SCENARIOS[r.scenario_key] ?? r.scenario_key}
+                        {scenarios[r.scenario_key] ?? r.scenario_key}
 
                         {isWorst && (
                           <span className="ml-2 text-[9px] text-red-400 bg-red-500/10 px-1.5 py-0.5 rounded-full">

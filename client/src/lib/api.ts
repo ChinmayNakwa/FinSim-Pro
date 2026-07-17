@@ -15,8 +15,28 @@ export async function runSimulation(req: SimulationRequest): Promise<SimulationR
   return res.json()
 }
 
-export async function fetchMetaAssets() {
+export interface AssetMeta {
+  default_cagr: number
+  default_vol: number
+  ticker: string | null
+}
+
+/** Default market assumptions (CAGR/vol/ticker) per supported asset class. */
+export async function fetchMetaAssets(): Promise<Record<string, AssetMeta>> {
   const res = await fetch(`${BASE}/meta/asset-classes`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}
+
+export interface ScenarioMeta {
+  label: string
+  description: string
+}
+
+/** Available stress-test scenarios, keyed by scenario_key (backend source of truth). */
+export async function fetchStressScenarios(): Promise<Record<string, ScenarioMeta>> {
+  const res = await fetch(`${BASE}/stress-test/scenarios`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 

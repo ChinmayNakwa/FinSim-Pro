@@ -186,7 +186,14 @@ export default function GoalsTab({ data }: { data: SimulationResponse }) {
               </div>
               <div className="flex gap-2 items-center">
                 <Badge color={PRIORITY_COLOR[g.priority] ?? '#546e7a'}>{g.priority}</Badge>
-                {g.on_track ? <Badge color="#00e676">✓ On track</Badge> : <Badge color="#ff4444">⚠ Shortfall</Badge>}
+                {(() => {
+                  const p = g.prob_funded_pct
+                  const [color, label] =
+                    p >= 75 ? ['#00e676', '✓ Likely'] :
+                    p >= 50 ? ['#ffb300', '~ Uncertain'] :
+                              ['#ff4444', '⚠ Unlikely']
+                  return <Badge color={color}>{label} · {p.toFixed(0)}%</Badge>
+                })()}
               </div>
             </div>
             <ProgressBar value={g.percent_funded} color={barColor} />
@@ -196,9 +203,10 @@ export default function GoalsTab({ data }: { data: SimulationResponse }) {
                 Projected NW at goal: {cr(g.projected_nw_at_goal)}
               </span>
             </div>
-            {g.shortfall > 0 && (
-              <p className="text-[11px] text-red font-mono mt-1.5">Shortfall: {cr(g.shortfall)}</p>
-            )}
+            <p className="text-[11px] text-muted font-mono mt-1.5">
+              Probability fully funded: <span style={{ color: barColor }}>{g.prob_funded_pct.toFixed(1)}%</span>
+              <span className="text-muted/50"> · across {/* MC paths */}Monte Carlo paths</span>
+            </p>
           </Card>
         )
       })}
