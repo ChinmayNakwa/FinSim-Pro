@@ -61,8 +61,8 @@ ASSET_DEFAULTS = {
 
 class GoalIn(BaseModel):
     name: str
-    target_amount: float
-    target_year: int
+    target_amount: float = Field(0, ge=0)
+    target_year: int = Field(1, ge=1, le=60)
     priority: str = "Important"       # "Critical" | "Important" | "Nice-to-have"
     # FIX: goals now optionally grow with CPI so ₹50L in year 10 stays realistic
     inflation_adjust: bool = True
@@ -70,10 +70,10 @@ class GoalIn(BaseModel):
 
 class PortfolioHoldingIn(BaseModel):
     asset_class: str
-    current_value: float
+    current_value: float = Field(0, ge=0)
     purchase_date: Optional[datetime] = None
-    purchase_price: float
-    monthly_sip: float = 0.0
+    purchase_price: float = Field(0, ge=0)
+    monthly_sip: float = Field(0.0, ge=0)
     ticker: Optional[str] = None
 
 
@@ -99,37 +99,42 @@ class TaxConfigIn(BaseModel):
 
 class SimulationRequest(BaseModel):
     # Personal
-    savings: float = 500_000
-    income: float = 100_000
-    expenses: float = 40_000
-    age: int = 28
+    savings: float = Field(500_000, ge=0)
+    income: float = Field(100_000, ge=0)
+    expenses: float = Field(40_000, ge=0)
+    age: int = Field(28, ge=0, le=100)
     risk_tolerance: str = "Moderate"
 
     # Portfolio
     portfolio_holdings: List[PortfolioHoldingIn] = Field(default_factory=list)
 
     # Loan / EMI
-    emi_loan_amount: float = 2_000_000
-    emi_rate: float = 9.0
-    emi_tenure_years: int = 10
+    emi_loan_amount: float = Field(2_000_000, ge=0)
+    emi_rate: float = Field(9.0, ge=0, le=50)
+    emi_tenure_years: int = Field(10, ge=0, le=40)
 
     # Emergency fund
-    emergency_months: int = 6
+    emergency_months: int = Field(6, ge=0, le=120)
 
     # Simulation settings
-    sim_years: int = 20
+    sim_years: int = Field(20, ge=1, le=50)
     apply_tax: bool = True
-    n_sims: int = DEFAULT_N_SIMS
-    withdrawal_rate: float = DEFAULT_WITHDRAWAL_RATE
-    risk_free_rate: float = DEFAULT_RISK_FREE_RATE
-    savings_yield: float = DEFAULT_SAVINGS_YIELD
-    emergency_yield: float = DEFAULT_EMERGENCY_YIELD
+    # Cap paths to keep a single request from exhausting CPU/memory.
+    n_sims: int = Field(DEFAULT_N_SIMS, ge=1, le=10_000)
+    withdrawal_rate: float = Field(DEFAULT_WITHDRAWAL_RATE, gt=0, le=1)
+    risk_free_rate: float = Field(DEFAULT_RISK_FREE_RATE, ge=0, le=1)
+    savings_yield: float = Field(DEFAULT_SAVINGS_YIELD, ge=0, le=1)
+    emergency_yield: float = Field(DEFAULT_EMERGENCY_YIELD, ge=0, le=1)
     include_holidays: bool = True
-    holiday_spike_pct: float = DEFAULT_HOLIDAY_SPENDING_SPIKE
+    holiday_spike_pct: float = Field(DEFAULT_HOLIDAY_SPENDING_SPIKE, ge=0, le=1)
     holiday_months: List[int] = Field(default_factory=lambda: DEFAULT_HOLIDAY_MONTHS)
 
     # FIX: rng_seed was hardcoded 42 inside run_simulation — now caller-controlled
     rng_seed: int = 42
+
+    # Student-t degrees of freedom for asset-return marginals (fat tails).
+    # Lower = fatter tails (more extreme crashes); higher → approaches Gaussian.
+    t_dof: int = Field(5, ge=3, le=100)
 
     # FIX: drift threshold was hardcoded 0.05 inside suggest_rebalancing
     rebalance_drift_threshold: float = 0.05
@@ -167,8 +172,11 @@ class GoalResult(BaseModel):
     priority: str
     projected_nw_at_goal: float
     percent_funded: float
-    shortfall: float
-    on_track: bool
+    # Probability (0–100) that this goal is fully funded across Monte Carlo paths.
+    # Replaces the old mean-path `shortfall`/`on_track` pair with a real
+    # probabilistic read of goal attainment.
+    prob_funded_pct: float
+    on_track: bool          # True when prob_funded_pct >= 50 (median path funds it)
 
 
 class RebalanceSuggestion(BaseModel):

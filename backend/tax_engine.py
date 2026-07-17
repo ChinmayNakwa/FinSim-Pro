@@ -146,7 +146,11 @@ def compute_tax_on_income_vec(annual_income: np.ndarray, tax_cfg: TaxConfigIn) -
     tax_after_sc  = base_tax + surcharge_amt
     cess          = tax_after_sc * 0.04
     total_tax     = tax_after_sc + cess
-    eff_rate      = np.where(annual_income > 0, total_tax / annual_income, 0.0)
+    # Safe division: guard against income==0 producing 0/0 (nan) warnings.
+    eff_rate      = np.divide(
+        total_tax, annual_income,
+        out=np.zeros_like(total_tax, dtype=np.float64), where=annual_income > 0,
+    )
     return total_tax, eff_rate
 
 

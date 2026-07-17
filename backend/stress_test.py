@@ -80,47 +80,55 @@ SCENARIOS: Dict[str, dict] = {
 # CORE ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_shocked_returns(
+def _apply_shock(
+    baseline_asset_rand: Dict[str, np.ndarray],
     market_returns_by_asset: Dict[str, Tuple[float, float]],
     scenario: dict,
     shock_year: int,
     sim_years: int,
-    n_sims: int,
 ) -> Dict[str, np.ndarray]:
     """
-    Build per-asset return matrices with shock injected at shock_year.
-    Uses seed=42 to match the baseline for Common Random Numbers (CRN).
+    Derive shocked return matrices *from the baseline's own random draws* so
+    that the baseline and shocked simulations share Common Random Numbers.
+
+    Previously this drew a fresh ``default_rng(42)`` sequence which did NOT
+    match the baseline (baseline draws inflation + income_growth *before* its
+    asset returns, so the underlying normals differ). That contaminated every
+    reported delta with RNG noise. By copying the baseline draws and only
+    overwriting the shock/recovery years, every non-shock year is now
+    byte-for-byte identical between the two runs — the delta reflects the
+    shock alone.
+
+    Shock/recovery years reuse the baseline's per-path noise (re-centred, and
+    amplified 1.5x during the shock to model a volatility spike).
     """
-    rng = np.random.default_rng(seed=42) 
-    shocked: Dict[str, np.ndarray] = {}
     shock_dur = scenario["shock_duration_years"]
     rec_years = scenario["recovery_years"]
     eq_shock  = scenario["equity_shock_pct"]
 
-    for ac, (cagr, vol) in market_returns_by_asset.items():
-        # Baseline returns (what would have happened without the shock)
-        returns = rng.normal(cagr, vol, (n_sims, sim_years))
+    shocked: Dict[str, np.ndarray] = {
+        ac: arr.copy() for ac, arr in baseline_asset_rand.items()
+    }
 
-        # Calculate specific shock for this asset class
+    for ac, (cagr, vol) in market_returns_by_asset.items():
+        if ac not in shocked:
+            continue
+        noise = baseline_asset_rand[ac] - cagr   # baseline per-(path,year) shock
         sensitivity = ASSET_SENSITIVITY.get(ac, 0.5)
         asset_shock = eq_shock * sensitivity
 
-        # Apply shock + Volatility Spike (Panic factor)
+        # Shock years: collapse the mean to the shock level, amplify the vol.
         for d in range(shock_dur):
             yr = shock_year + d
             if yr < sim_years:
-                # During shock, volatility increases by 1.5x
-                returns[:, yr] = asset_shock + rng.normal(0, vol * 1.5, n_sims)
+                shocked[ac][:, yr] = asset_shock + noise[:, yr] * 1.5
 
-        # Apply recovery (Mean reversion)
+        # Recovery years: mean-revert with a decaying boost, keep baseline noise.
         for r in range(rec_years):
             yr = shock_year + shock_dur + r
             if yr < sim_years:
-                # Assets recover a portion of the lost value as a boost to CAGR
                 recovery_boost = -asset_shock * (0.5 / (r + 1))
-                returns[:, yr] = (cagr + recovery_boost) + rng.normal(0, vol, n_sims)
-
-        shocked[ac] = returns
+                shocked[ac][:, yr] = (cagr + recovery_boost) + noise[:, yr]
 
     return shocked
 
@@ -131,9 +139,13 @@ def run_stress_test(
     scenario_key: str,
     shock_year: int = 3,
     custom_scenario: Optional[dict] = None,
+    baseline_sim: Optional[dict] = None,
 ) -> dict:
     """
     Run baseline + shocked simulation for a given scenario.
+
+    ``baseline_sim`` may be supplied by callers (e.g. ``run_all_scenarios``)
+    to avoid recomputing the identical baseline for every scenario.
     """
     if scenario_key == "custom":
         scenario = custom_scenario or SCENARIOS["market_crash_2008"]
@@ -142,13 +154,14 @@ def run_stress_test(
 
     N, Y = req.n_sims, req.sim_years
 
-    # 1. Baseline (No shock, seed 42)
-    baseline_sim = run_simulation(req, market_returns_by_asset)
+    # 1. Baseline (no shock) — compute once, reuse if provided.
+    if baseline_sim is None:
+        baseline_sim = run_simulation(req, market_returns_by_asset)
     baseline_nw  = baseline_sim["net_worth"]
 
-    # 2. Build Shocked Returns (Flexible asset-wise calculation)
-    shocked_returns = _build_shocked_returns(
-        market_returns_by_asset, scenario, shock_year, Y, N
+    # 2. Build shocked returns from the baseline draws (CRN-preserving).
+    shocked_returns = _apply_shock(
+        baseline_sim["asset_rand"], market_returns_by_asset, scenario, shock_year, Y
     )
 
     # 3. Setup Income Multipliers (Temporary disruption)
@@ -196,11 +209,23 @@ def run_stress_test(
     base_sharpe    = sharpe_ratio(baseline_nw, req.risk_free_rate)
     shocked_sharpe = sharpe_ratio(shocked_nw,  req.risk_free_rate)
     
-    median_loss_pct = (
-        (shocked_paths["p50"][-1] - base_paths["p50"][-1])
-        / max(abs(base_paths["p50"][-1]), 1)
-        * 100
-    )
+    # Headline loss = the WORST dip of the shocked median vs baseline over the
+    # whole horizon (the trough), not the terminal difference. For high-income
+    # profiles the shock fully recovers by the final year, so a terminal metric
+    # reads ~0% for every scenario and makes them look identical — the trough is
+    # what actually distinguishes a 45% crash from a job loss.
+    base_arr   = np.asarray(base_paths["p50"], dtype=np.float64)
+    shocked_arr = np.asarray(shocked_paths["p50"], dtype=np.float64)
+    dev_pct    = (shocked_arr - base_arr) / np.maximum(np.abs(base_arr), 1.0) * 100
+    trough_idx = int(np.argmin(dev_pct))
+    median_loss_pct = float(dev_pct[trough_idx])   # most-negative deviation
+    trough_year     = trough_idx
+
+    # Probability the shock pushes net worth below its pre-shock level at the
+    # trough year — a meaningful "did the shock actually hurt" gauge (the old
+    # terminal < 0 test was ~0% for anyone with strong income).
+    pre_shock_nw   = np.percentile(shocked_nw[:, max(shock_year - 1, 0)], 50)
+    prob_below_pct = float(np.mean(shocked_nw[:, trough_idx] < pre_shock_nw) * 100)
 
     return {
         "scenario_key":   scenario_key,
@@ -209,6 +234,7 @@ def run_stress_test(
         "shock_year":     shock_year,
         "recovery_year":  recovery_year,
         "years_to_recover": (recovery_year - shock_year) if recovery_year else None,
+        "trough_year":    trough_year,
         "baseline": base_paths,
         "shocked":  shocked_paths,
         "delta_p50": [s - b for s, b in zip(shocked_paths["p50"], base_paths["p50"])],
@@ -220,10 +246,17 @@ def run_stress_test(
             "shocked_sharpe":      shocked_sharpe,
             "sharpe_delta":        round(shocked_sharpe - base_sharpe, 3),
             "median_nw_loss_pct":  round(median_loss_pct, 2),
-            "prob_negative_pct":   round(float(np.mean(shocked_nw[:, -1] < 0) * 100), 2),
+            "prob_negative_pct":   round(prob_below_pct, 2),
         },
         "scenario_params": scenario,
     }
 
 def run_all_scenarios(req, market_returns_by_asset, shock_year=3):
-    return [run_stress_test(req, market_returns_by_asset, k, shock_year) for k in SCENARIOS]
+    # Baseline is identical across scenarios — compute it once and reuse.
+    baseline_sim = run_simulation(req, market_returns_by_asset)
+    return [
+        run_stress_test(
+            req, market_returns_by_asset, k, shock_year, baseline_sim=baseline_sim
+        )
+        for k in SCENARIOS
+    ]

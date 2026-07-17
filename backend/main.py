@@ -60,7 +60,8 @@ from stress_test import (
     SCENARIOS)
 
 import logging
-logging.basicConfig(level=logging.DEBUG)
+# Log level configurable; default INFO (DEBUG is noisy/leaky for production).
+logging.basicConfig(level=os.getenv("FINSIM_LOG_LEVEL", "INFO").upper())
 
 # ─────────────────────────────────────────────────────────────────────────────
 # APP SETUP
@@ -76,9 +77,18 @@ app = FastAPI(
     version="2.0.0",
 )
 
+# CORS: a wildcard origin combined with credentials is rejected by browsers,
+# so use explicit origins (overridable via FINSIM_CORS_ORIGINS, comma-separated).
+_cors_origins = [
+    o.strip() for o in os.getenv(
+        "FINSIM_CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",") if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -196,7 +206,7 @@ def simulate(req: SimulationRequest):
     }
 
     # Patch effective expenses into the request copy (avoid mutating caller's object)
-    patched = req.copy(update={"expenses": effective_expenses})
+    patched = req.model_copy(update={"expenses": effective_expenses})
 
     # ── Run simulation ──
     sim = run_simulation(patched, market_returns_by_asset)
@@ -206,7 +216,7 @@ def simulate(req: SimulationRequest):
     ltcg_tax        = sim["ltcg_tax_paid"]
     stcg_tax        = sim["stcg_tax_paid"]
     eff_rate_path   = sim["eff_rate_path"]
-    goal_shortfall  = sim["goal_shortfall"]
+    goal_funded_prob = sim["goal_funded_prob"]
     asset_balances  = sim["asset_balances"]
     asset_ltcg_tax  = sim["asset_ltcg_tax"]
     asset_stcg_tax  = sim["asset_stcg_tax"]
@@ -285,7 +295,7 @@ def simulate(req: SimulationRequest):
         idx             = min(g.target_year, req.sim_years)
         nw_at_goal      = float(p50[idx])
         pct_funded      = min(100.0, nw_at_goal / max(g.target_amount, 1) * 100)
-        shortfall       = float(goal_shortfall.get(g.name, 0.0))
+        prob_funded     = round(goal_funded_prob.get(g.name, 0.0) * 100, 1)
         goal_results.append(
             GoalResult(
                 name=g.name,
@@ -294,8 +304,8 @@ def simulate(req: SimulationRequest):
                 priority=g.priority,
                 projected_nw_at_goal=nw_at_goal,
                 percent_funded=round(pct_funded, 2),
-                shortfall=shortfall,
-                on_track=shortfall == 0.0,
+                prob_funded_pct=prob_funded,
+                on_track=prob_funded >= 50.0,
             )
         )
 
@@ -344,11 +354,11 @@ def simulate(req: SimulationRequest):
     # ── Regime comparison ──
     snap_new = compute_tax_on_income(
         req.income * 12,
-        TaxConfigIn(**{**req.tax_cfg.dict(), "regime": "new"}),
+        TaxConfigIn(**{**req.tax_cfg.model_dump(), "regime": "new"}),
     )
     snap_old = compute_tax_on_income(
         req.income * 12,
-        TaxConfigIn(**{**req.tax_cfg.dict(), "regime": "old"}),
+        TaxConfigIn(**{**req.tax_cfg.model_dump(), "regime": "old"}),
     )
     regime_comparison = [
         {

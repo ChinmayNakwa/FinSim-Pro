@@ -58,7 +58,11 @@ def compute_drawdown(paths: np.ndarray) -> np.ndarray:
     """
     positive_peak = np.maximum.accumulate(np.maximum(paths, 0), axis=1)
     has_peak = positive_peak > 0
-    dd = np.where(has_peak, (positive_peak - paths) / positive_peak, 0.0)
+    # Safe division: only divide where a positive peak exists (avoids 0/0 warnings).
+    dd = np.divide(
+        positive_peak - paths, positive_peak,
+        out=np.zeros_like(paths, dtype=np.float64), where=has_peak,
+    )
     return np.clip(dd, 0, 1).max(axis=1)   # shape (N,)
 
 
@@ -143,6 +147,94 @@ def get_prophet_stats(
         return fallback_cagr, fallback_vol, False
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ASSET RETURN CORRELATION  (used to draw jointly-correlated Monte Carlo returns)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_EQUITY_CLASSES = {"Indian Equity", "Nifty Bank", "Nifty IT", "International Equity"}
+
+
+def _pair_correlation(a: str, b: str) -> float:
+    """
+    Heuristic pairwise return correlation between two asset classes.
+    Equities move together; gold is a partial hedge; debt is near-independent.
+    Deliberately conservative but far more realistic than the previous
+    independent-returns assumption.
+    """
+    if a == b:
+        return 1.0
+    pair = {a, b}
+    a_eq, b_eq = a in _EQUITY_CLASSES, b in _EQUITY_CLASSES
+    if a_eq and b_eq:
+        return 0.75                     # equities are highly co-movement-y
+    if "Gold" in pair and (a_eq or b_eq):
+        return -0.10                    # gold as a mild crash hedge
+    if "Real Estate" in pair and (a_eq or b_eq):
+        return 0.30
+    if "Debt/Bonds" in pair and (a_eq or b_eq):
+        return 0.00
+    return 0.10                         # weak default cross-correlation
+
+
+def build_correlation_cholesky(asset_classes: List[str]) -> np.ndarray:
+    """
+    Build a lower-triangular Cholesky factor of the asset correlation matrix.
+    The hand-specified matrix may not be positive semi-definite, so we clip
+    negative eigenvalues and renormalise to a valid correlation matrix first.
+    """
+    n = len(asset_classes)
+    corr = np.array([
+        [_pair_correlation(asset_classes[i], asset_classes[j]) for j in range(n)]
+        for i in range(n)
+    ], dtype=np.float64)
+
+    # Nearest positive-definite correlation via eigenvalue clipping.
+    eigvals, eigvecs = np.linalg.eigh(corr)
+    eigvals = np.clip(eigvals, 1e-6, None)
+    corr_psd = eigvecs @ np.diag(eigvals) @ eigvecs.T
+    d = np.sqrt(np.diag(corr_psd))
+    corr_psd = corr_psd / np.outer(d, d)          # renormalise unit diagonal
+    return np.linalg.cholesky(corr_psd)
+
+
+def draw_asset_returns(
+    rng: np.random.Generator,
+    market_returns_by_asset: Dict[str, tuple],
+    n_sims: int,
+    sim_years: int,
+    t_dof: int = 5,
+) -> Dict[str, np.ndarray]:
+    """
+    Draw correlated, fat-tailed (Student-t) annual returns for every asset.
+
+    - Correlation: standard normals are mixed through the correlation Cholesky
+      factor so equities crash together, gold partially hedges, etc.
+    - Fat tails: the correlated normals are divided by sqrt(chi2/dof) to form a
+      multivariate Student-t, then rescaled to preserve each asset's target vol.
+
+    Returns {asset_class: (n_sims, sim_years) array} — same structure the rest
+    of the engine expects.
+    """
+    acs   = list(market_returns_by_asset.keys())
+    cagrs = np.array([market_returns_by_asset[ac][0] for ac in acs])
+    vols  = np.array([market_returns_by_asset[ac][1] for ac in acs])
+    n     = len(acs)
+
+    L = build_correlation_cholesky(acs)                       # (n, n)
+    z = rng.standard_normal((n_sims, sim_years, n))
+    corr_normal = z @ L.T                                     # correlated normals
+
+    if t_dof and t_dof > 2:
+        g = rng.chisquare(t_dof, size=(n_sims, sim_years, 1)) / t_dof
+        t = corr_normal / np.sqrt(g)
+        t *= np.sqrt((t_dof - 2) / t_dof)                    # rescale to unit variance
+    else:
+        t = corr_normal
+
+    returns = cagrs + vols * t                               # broadcast over (N, Y, n)
+    return {ac: returns[:, :, i] for i, ac in enumerate(acs)}
+
+
 def get_blended_forecast(
     holdings: List[PortfolioHoldingIn], years: int
 ) -> Tuple[float, float, dict]:
@@ -218,10 +310,11 @@ def run_simulation(
     if prebuilt_asset_rand is not None:
         asset_rand = prebuilt_asset_rand
     else:
-        asset_rand: Dict[str, np.ndarray] = {
-            ac: rng.normal(cagr, vol, (N, Y))
-            for ac, (cagr, vol) in market_returns_by_asset.items()
-        }
+        # Correlated + fat-tailed (Student-t) draws — assets no longer move
+        # independently, and crashes are no longer under-weighted by a Gaussian.
+        asset_rand = draw_asset_returns(
+            rng, market_returns_by_asset, N, Y, t_dof=getattr(req, "t_dof", 5)
+        )
 
     net_worth    = np.zeros((N, Y + 1), dtype=np.float64)
     savings_bal  = np.full(N, float(req.savings), dtype=np.float64)
@@ -253,7 +346,9 @@ def run_simulation(
     asset_ltcg_tax  = {ac: np.zeros((N, Y)) for ac in asset_balances}
     asset_stcg_tax  = {ac: np.zeros((N, Y)) for ac in asset_balances}
     eff_rate_path   = np.zeros((N, Y))
-    goal_shortfall  = {g.name: 0.0 for g in req.goals}
+    # Probability (0–1) each goal is fully funded, measured per path at its
+    # target year. Goals beyond the horizon stay 0.0 (never reached).
+    goal_funded_prob = {g.name: 0.0 for g in req.goals}
 
     income_multipliers = prebuilt_income_mult if prebuilt_income_mult is not None else np.ones(Y)
 
@@ -296,13 +391,25 @@ def run_simulation(
         total_sip = sum(h.monthly_sip for h in req.portfolio_holdings) * 12
         surplus   = annual_income - annual_expenses - tax_yr - annual_emi - total_sip
 
-        new_emg_target = monthly_expenses * req.emergency_months
-        emergency_fund = np.maximum(
-            emergency_fund * (1 + req.emergency_yield), new_emg_target
-        )
-        savings_bal = np.maximum(
-            0, savings_bal * (1 + req.savings_yield) + surplus
-        )
+        # ── Reserves: grow, then draw down on deficits (emergency fund is real) ─
+        # FIX: previously the emergency fund was force-refilled to target every
+        # year via max(...) and never actually spent. Now it grows by its yield,
+        # absorbs cash-flow deficits after savings are exhausted, and is
+        # replenished from genuine surplus toward its target.
+        emergency_fund = emergency_fund * (1 + req.emergency_yield)
+        pool = savings_bal * (1 + req.savings_yield) + surplus   # surplus may be < 0
+
+        deficit        = np.maximum(0.0, -pool)
+        from_emergency = np.minimum(emergency_fund, deficit)
+        emergency_fund -= from_emergency
+        savings_bal     = np.maximum(0.0, pool + from_emergency)
+
+        # Replenish the emergency fund from surplus toward its target (capped by
+        # available savings), so it recovers after a shock rather than staying drained.
+        emg_target = monthly_expenses * req.emergency_months
+        topup      = np.minimum(savings_bal, np.maximum(0.0, emg_target - emergency_fund))
+        emergency_fund += topup
+        savings_bal    -= topup
 
         # ── Asset-wise updates (VECTORIZED tax) ───────────────────────────────
         total_asset_ltcg = np.zeros(N)
@@ -348,8 +455,10 @@ def run_simulation(
                 else:
                     effective_target = goal.target_amount
 
-                total_assets = savings_bal + sum(asset_balances.values())
-                frac = np.minimum(1.0, effective_target / np.maximum(total_assets, 1.0))
+                # Probabilistic funding: fraction of paths where total available
+                # assets (pre-withdrawal) cover the goal target.
+                total_available = savings_bal + sum(asset_balances.values())
+                goal_funded_prob[goal.name] = float(np.mean(total_available >= effective_target))
 
                 # FIX: withdraw from savings first; if still short, sell assets
                 # lowest-tax assets are Debt/Bonds (no LTCG benefit) so keep
@@ -369,10 +478,6 @@ def run_simulation(
                         asset_balances[sell_ac] -= from_asset
                         withdrawal_needed        -= from_asset
 
-                actual_met = (savings_bal + sum(asset_balances.values())).mean()
-                if actual_met < effective_target:
-                    goal_shortfall[goal.name] = effective_target - actual_met
-
         total_investments   = sum(b for b in asset_balances.values())
         net_worth[:, y + 1] = savings_bal + total_investments + emergency_fund - loan_outstanding
 
@@ -382,12 +487,15 @@ def run_simulation(
         ltcg_tax_paid=ltcg_tax_paid,
         stcg_tax_paid=stcg_tax_paid,
         eff_rate_path=eff_rate_path,
-        goal_shortfall=goal_shortfall,
+        goal_funded_prob=goal_funded_prob,
         emergency_fund=emergency_fund,
         asset_balances=asset_balances,
         asset_ltcg_tax=asset_ltcg_tax,
         asset_stcg_tax=asset_stcg_tax,
         emi_monthly=emi_payment,
+        # Expose the exact per-asset random draws used, so callers (e.g. the
+        # stress test) can reuse them for Common Random Numbers.
+        asset_rand=asset_rand,
     )
 
 
